@@ -96,6 +96,18 @@ void pretty_print( std::ostream& os, json::value const& jv, std::string* indent 
         os << "\n";
 }
 
+void write_to_file(const std::string& filename, const std::string& hex) {
+    std::ofstream out(filename, std::ios::out | std::ios::app);
+    if (!out) {
+        std::cerr << "Error: cannot open " << filename << " for writing.\n";
+        return;
+    }
+
+    out << hex << '\n';
+    if (!out)
+        std::cerr << "Error: failed to write to " << filename << ".\n";
+}
+
 // Parses a JSON string into a Boost.JSON object
 json::object parse_json(const std::string& raw) {
     if (raw.empty() || raw[0] != '{') {
@@ -118,12 +130,106 @@ std::string get_block(const std::string& hash) {
     return run_command(cmd.str());
 }
 
+// Gets the transaction as a JSON object for a given transaction hash
+json::object get_transaction(const std::string& hash) {
+    std::ostringstream cmd;
+    cmd << "bitcoin-cli getrawtransaction " << hash << " 1";
+    return parse_json(run_command(cmd.str()));
+}
+
+// The hex data includes the OP_RETURN code and length metadata so trim it
+std::string trim_op_return_prefix(const std::string& hex) {
+    if (hex.size() < 2 || hex.substr(0, 2) != "6a")
+        return hex; // not OP_RETURN
+
+    size_t pos = 2; // skip 6a
+
+    if (hex.size() < 4)
+        return "";
+
+    const std::string op = hex.substr(pos, 2);
+    pos += 2;
+
+    if (op == "4c") pos += 2;        // PUSHDATA1: 1 byte length
+    else if (op == "4d") pos += 4;   // PUSHDATA2: 2 bytes length
+    else if (op == "4e") pos += 8;   // PUSHDATA4: 4 bytes length
+    else pos -= 2;                   // immediate data length < 76, no prefix
+
+    if (pos >= hex.size())
+        return "";
+
+    return hex.substr(pos);
+}
+
+// Look for OP_RETURNs and store them in a vector if they exist.
+std::vector<std::string> process_transaction(const json::object& tx) {
+    std::vector<std::string> results;
+
+    if (!tx.contains("vout")) {
+        std::cerr << "Transaction has no outputs.\n";
+        return results;
+    }
+
+    const auto& vout = tx.at("vout").as_array();
+
+    for (const auto& out : vout) {
+        const auto& obj = out.as_object();
+
+        if (!obj.contains("scriptPubKey"))
+            continue;
+
+        const auto& script = obj.at("scriptPubKey").as_object();
+
+        if (!script.contains("asm"))
+            continue;
+
+        const std::string& asm_field = script.at("asm").as_string().c_str();
+
+        if (asm_field.rfind("OP_RETURN", 0) == 0) {
+            // OP_RETURN found
+            if (script.contains("hex")) {
+                results.push_back(trim_op_return_prefix(script.at("hex").as_string().c_str()));
+            } else {
+                // fallback: take entire asm field
+                results.push_back(asm_field);
+            }
+        }
+    }
+
+    return results;
+}
+
+// Process each transaction
+void process_transactions(const json::value& txs) {
+    int i = 0;
+    for (auto tx : txs.as_array()) {
+        if (i++ == 0)
+            continue; // skip coinbase
+
+        auto tx_json = get_transaction(tx.as_string().c_str());
+        auto op_returns = process_transaction(tx_json);
+
+        if (op_returns.size() > 0) {
+            std::cout << "Transaction " << tx.as_string()
+                      << " has " << op_returns.size() << " OP_RETURN outputs.\r";
+
+            for (const auto& data : op_returns) {
+                if (data.size() > 160) {
+                    std::string filename {tx.as_string().c_str()};
+                    filename += ".txt";
+                    write_to_file(filename, data);
+                }
+            }
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     int start_height = 0; // We will treat this as meaning start at the tip
     int max_blocks = 1;
 
     // Parse command line argument for number of days
-    if (argc > 2) {
+    if (argc > 3) {
         std::cerr << "Usage: " << argv[0] << " [start_height] [max_blocks]\n";
         return 1;
     }
@@ -144,8 +250,11 @@ int main(int argc, char** argv) {
     auto block = parse_json(get_block(head_hash));
 
     for (int i = 0; i < max_blocks; ++i) {
-        pretty_print(std::cout, block);
-        break;
+        int number_of_transactions = block["nTx"].as_int64();
+        auto transactions = block["tx"];
+
+        std::cout << "Processing block " << current_height-- << " with " << number_of_transactions << " transactions...\n";
+        process_transactions(transactions);
 
         // Get previous block
         if (auto* val = block.if_contains("previousblockhash")) {
