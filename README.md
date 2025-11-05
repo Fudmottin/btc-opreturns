@@ -35,7 +35,10 @@ make
 
 ```sh
 ./btc-opreturns 922251 1000
+./btc-opreturns 0 10
 ```
+The second example will check the ten blocks from the tip.
+
 ## License
 
 MIT
