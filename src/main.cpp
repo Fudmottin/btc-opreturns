@@ -210,9 +210,9 @@ void process_transactions(const json::value& txs) {
         auto op_returns = process_transaction(tx_json);
 
         if (op_returns.size() > 0) {
-            std::cout << "Transaction " << tx.as_string()
+/*            std::cout << "Transaction " << tx.as_string()
                       << " has " << op_returns.size() << " OP_RETURN outputs.\r";
-
+*/
             for (const auto& data : op_returns) {
                 if (data.size() > 160) {
                     std::string filename {tx.as_string().c_str()};
@@ -234,7 +234,6 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (argc > 1) start_height = std::stoi(argv[1]);
-    if (argc > 2) max_blocks = std::stoi(argv[2]);
 
     // Get current blockchain info
     auto info = parse_json(run_command("bitcoin-cli getblockchaininfo"));
@@ -244,6 +243,9 @@ int main(int argc, char** argv) {
     // we will silently fail over to the current_height.
     if ((start_height > 0) && (start_height < current_height))
         current_height = start_height;
+
+    if (argc > 2) max_blocks = std::stoi(argv[2]);
+    else max_blocks = current_height;
 
     // Get current block
     auto head_hash = get_block_hash(current_height);
